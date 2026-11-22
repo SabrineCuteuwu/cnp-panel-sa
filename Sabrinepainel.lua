@@ -441,25 +441,25 @@ end
 -- Anti-fling when jumping into walls
 local function dampWallFling(root, char)
     if not root or not char then return end
+    -- while speed glitch is on, do not kill velocity (causes rubberband)
+    if speedEnabled then return end
     local v = root.AssemblyLinearVelocity
     local horiz = Vector3.new(v.X, 0, v.Z)
-    if horiz.Magnitude < 35 then return end -- only when really fast
+    if horiz.Magnitude < 55 then return end
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
     rp.FilterDescendantsInstances = { char }
     local origin = root.Position
-    -- only check movement direction (less false wall hits → less giật)
     local d = horiz.Unit
-    local hit = Workspace:Raycast(origin, d * 2.2, rp)
+    local hit = Workspace:Raycast(origin, d * 1.6, rp)
     if not hit then return end
     local n = hit.Normal
     local into = horiz:Dot(Vector3.new(-n.X, 0, -n.Z))
-    if into <= 0 then return end
+    if into <= 8 then return end
     local nn = Vector3.new(-n.X, 0, -n.Z)
     if nn.Magnitude < 0.05 then return end
-    -- remove only the into-wall component, keep most speed
-    local nv = horiz - nn.Unit * (into * 0.85)
-    local flingCap = math.max(140, SPEED_VALUE * (1 + SPEEDCFG.overshoot) * 1.1)
+    local nv = horiz - nn.Unit * (into * 0.55)
+    local flingCap = math.max(180, SPEED_VALUE * (1 + SPEEDCFG.overshoot) * 1.25)
     if nv.Magnitude > flingCap then
         nv = nv.Unit * flingCap
     end
@@ -593,23 +593,20 @@ local function speedSetupCharacter(char)
                 end
 
                 -- air assist (wall-safe): pulls horizontal velocity toward the speed, never slows you down
+                -- mild air boost only (no hard rewrite → less rubberband)
                 if root and smoothWalkSpeed > BASE_SPEED + 8 then
                     local md = speedHumanoid.MoveDirection
-                    if md.Magnitude > 0.15 then
+                    if md.Magnitude > 0.2 then
                         local dir = Vector3.new(md.X, 0, md.Z)
                         if dir.Magnitude > 0.05 then
                             dir = dir.Unit
-                            local rp = RaycastParams.new()
-                            rp.FilterType = Enum.RaycastFilterType.Exclude
-                            rp.FilterDescendantsInstances = { char }
-                            if not Workspace:Raycast(root.Position, dir * 3.2, rp) then
-                                local v = root.AssemblyLinearVelocity
-                                local cur = Vector3.new(v.X, 0, v.Z)
-                                local target = dir * smoothWalkSpeed
-                                if cur.Magnitude < smoothWalkSpeed * 1.05 then
-                                    local nv = cur:Lerp(target, 1 - math.exp(-3.2 * dt))
-                                    root.AssemblyLinearVelocity = Vector3.new(nv.X, v.Y, nv.Z)
-                                end
+                            local v = root.AssemblyLinearVelocity
+                            local cur = Vector3.new(v.X, 0, v.Z)
+                            local along = cur:Dot(dir)
+                            if along < smoothWalkSpeed * 0.92 then
+                                local add = dir * ((smoothWalkSpeed - math.max(along, 0)) * math.clamp(dt * 6, 0, 0.35))
+                                local nv = cur + add
+                                root.AssemblyLinearVelocity = Vector3.new(nv.X, v.Y, nv.Z)
                             end
                         end
                     end
@@ -629,14 +626,14 @@ local function speedSetupCharacter(char)
                     speedHumanoid.WalkSpeed = math.max(BASE_SPEED, smoothWalkSpeed)
                 end
 
-                -- soft horizontal brake on landing
-                if root then
+                -- very soft ground slide (avoid yank back while speed glitch)
+                if root and not speedEnabled then
                     local v = root.AssemblyLinearVelocity
                     local hx, hz = v.X, v.Z
                     local mag = math.sqrt(hx * hx + hz * hz)
-                    local cap = BASE_SPEED + 28
+                    local cap = BASE_SPEED + 40
                     if mag > cap then
-                        local f = math.exp(-3.2 * dt)
+                        local f = math.exp(-2.0 * dt)
                         local nh = math.max(cap, mag * f)
                         local sc = nh / mag
                         root.AssemblyLinearVelocity = Vector3.new(hx * sc, v.Y, hz * sc)
@@ -2155,33 +2152,32 @@ do
     local rng = Random.new()
     local flakes = {}
     local lights = {}
-    -- soft deformed snow circles (no neon baubles)
-    local N = isMobile and 32 or 56
+    -- snow image flakes (no solid white dots)
+    local SNOW_IMG = "rbxassetid://15216668864"
+    local N = isMobile and 28 or 48
     for i = 1, N do
-        local f = Instance.new("Frame")
+        local f = Instance.new("ImageLabel")
         f.AnchorPoint = Vector2.new(0.5, 0.5)
+        f.BackgroundTransparency = 1 -- no white plate behind
         f.BorderSizePixel = 0
         f.ZIndex = 8
         f.Active = false
+        f.Image = SNOW_IMG
+        f.ScaleType = Enum.ScaleType.Fit
+        f.ImageTransparency = rng:NextNumber(0.05, 0.35)
         f.Parent = decor
 
-        -- oval / squashed circle — looks like melted/deformed snow
-        local w = rng:NextInteger(4, 11)
-        local h = math.max(3, math.floor(w * rng:NextNumber(0.55, 1.15)))
-        if rng:NextNumber() < 0.35 then
-            -- swap for horizontal blob
-            w, h = h + rng:NextInteger(0, 3), w
+        -- deformed oval size
+        local w = rng:NextInteger(10, 22)
+        local h = math.max(8, math.floor(w * rng:NextNumber(0.6, 1.1)))
+        if rng:NextNumber() < 0.4 then
+            w, h = h + rng:NextInteger(0, 4), w
         end
         f.Size = UDim2.fromOffset(w, h)
-        f.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        f.BackgroundTransparency = rng:NextNumber(0.05, 0.4)
-        -- almost circle but not perfect (slightly uneven corner)
-        local cr = rng:NextNumber(0.72, 1)
-        Instance.new("UICorner", f).CornerRadius = UDim.new(cr, 0)
-        f.Rotation = rng:NextNumber(-25, 25)
+        f.Rotation = rng:NextNumber(-30, 30)
 
         local x0 = rng:NextNumber(0.02, 0.98)
-        local y0 = -30 - (i % 20) * 18
+        local y0 = -40 - (i % 20) * 20
         f.Position = UDim2.new(x0, 0, 0, y0)
         flakes[i] = {
             f = f, x0 = x0, y = y0,
@@ -2190,7 +2186,7 @@ do
             freq = rng:NextNumber(0.7, 2.4),
             phase = rng:NextNumber(0, 6.28),
             rot = f.Rotation,
-            rotSpeed = rng:NextNumber(-50, 50),
+            rotSpeed = rng:NextNumber(-55, 55),
             wobble = rng:NextNumber(0.8, 2.2),
             baseW = w,
             baseH = h,
@@ -2242,12 +2238,11 @@ do
                 local sway = math.sin(t0 * p.freq + p.phase) * p.amp
                 p.f.Position = UDim2.new(p.x0 + sway, 0, 0, p.y)
                 p.f.Rotation = p.rot
-                -- gentle squash/stretch so circles stay deformed while falling
                 if p.baseW and p.baseH then
-                    local k = 1 + 0.12 * math.sin(t0 * (p.wobble or 1.2) + p.phase)
+                    local k = 1 + 0.1 * math.sin(t0 * (p.wobble or 1.2) + p.phase)
                     p.f.Size = UDim2.fromOffset(
-                        math.max(2, math.floor(p.baseW * k)),
-                        math.max(2, math.floor(p.baseH * (2 - k)))
+                        math.max(6, math.floor(p.baseW * k)),
+                        math.max(6, math.floor(p.baseH * (2 - k)))
                     )
                 end
             end
@@ -3243,7 +3238,7 @@ do
     local function applySky(preset)
         if not preset then return end
         local sky = getSky()
-        -- only sky textures, leave Lighting fog/brightness alone
+        -- ONLY Sky instance textures — never Atmosphere / Fog / Ambient
         setProp(sky, "CelestialBodiesShown", true)
         setProp(sky, "SunAngularSize", 11)
         setProp(sky, "MoonAngularSize", 11)
@@ -3258,6 +3253,7 @@ do
                 setProp(sky, prop, "rbxassetid://" .. tostring(id))
             end
         end
+        -- explicitly do not modify Lighting.Fog* or Atmosphere
     end
 
     local function openSkyPanel()
@@ -6647,18 +6643,27 @@ do
     end
 
     local function FindAllBeams()
-        -- self only: beams on local character / equipped tools
         local list = {}
         local seen = {}
-        local char = player.Character
-        if not char then return list end
-        local ok, descs = pcall(function() return char:GetDescendants() end)
-        if not ok or not descs then return list end
-        for _, obj in ipairs(descs) do
-            if obj:IsA("Beam") and not isHaloBeam(obj) and not seen[obj] then
+        local function add(obj)
+            if obj and obj:IsA("Beam") and not isHaloBeam(obj) and not seen[obj] then
                 seen[obj] = true
                 list[#list + 1] = obj
             end
+        end
+        local function addFrom(root)
+            if not root then return end
+            local ok, descs = pcall(function() return root:GetDescendants() end)
+            if ok and descs then
+                for _, obj in ipairs(descs) do add(obj) end
+            end
+            for _, obj in ipairs(root:GetChildren()) do add(obj) end
+        end
+        -- character / tools
+        addFrom(player.Character)
+        -- MM2 shot beam often Workspace.Part.Beam
+        for _, ch in ipairs(Workspace:GetChildren()) do
+            if ch.Name == "Part" then addFrom(ch) end
         end
         return list
     end
@@ -6690,35 +6695,44 @@ do
 
     local function applyOneBeam(beam)
         if not beam or not beam.Parent then return end
-        -- fully hidden by game — do not revive
         if beam.Enabled == false then return end
 
         rememberOriginal(beam)
+        local onChar = player.Character and beam:IsDescendantOf(player.Character)
 
-        -- self beams only (FindAllBeams already character-only)
+        -- COLOR every frame (game may overwrite)
         if CurrentBeamMode == ORIGINAL_KEY then
             if NeedRestoreOriginal then
                 local ob = OriginalByBeam[beam]
                 if ob then
-                    beam.Color = ob.Color
-                    beam.Texture = ob.Texture
+                    pcall(function()
+                        beam.Color = ob.Color
+                        beam.Texture = ob.Texture
+                    end)
                 end
             end
         else
-            beam.Texture = ""
-            if CurrentBeamMode == "Rainbow Roll" then
-                beam.Color = GetRollSequence()
-            else
-                local seq = SequenceCache[CurrentBeamMode]
-                if seq then
-                    beam.Color = seq
+            pcall(function()
+                beam.Texture = ""
+                if CurrentBeamMode == "Rainbow Roll" then
+                    beam.Color = GetRollSequence()
+                else
+                    local seq = SequenceCache[CurrentBeamMode]
+                    if seq then
+                        beam.Color = seq
+                    end
                 end
-            end
+            end)
         end
 
+        -- width/glow: character beams only (shot beams keep native fade)
+        if not onChar then return end
+
         if not StyledWidth[beam] then
-            beam.Width0 = BeamThickness
-            beam.Width1 = BeamThickness
+            pcall(function()
+                beam.Width0 = BeamThickness
+                beam.Width1 = BeamThickness
+            end)
             StyledWidth[beam] = true
         end
 
@@ -6732,8 +6746,9 @@ do
             local ob = OriginalByBeam[beam]
             SetBrightness(beam, (ob and ob.Brightness) or BaseBrightness)
         else
-            beam.LightEmission = 0
-            beam.LightInfluence = 1
+            -- slight emission so solid ColorSequence shows clearly
+            beam.LightEmission = 0.35
+            beam.LightInfluence = 0.4
             local ob = OriginalByBeam[beam]
             SetBrightness(beam, (ob and ob.Brightness) or BaseBrightness)
         end
